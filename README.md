@@ -99,8 +99,24 @@ transcriber:
 { "joinCommand": "voxtype meeting start --title {{title}} && xdg-open {{url}}" }
 ```
 
-Commands run through `bash -lc`, so your login `PATH` applies and `~/.local/bin`
-resolves without hardcoding it.
+### A note on PATH
+
+Commands run through `bash -lc`, with `$HOME/.local/bin` and `$HOME/bin`
+prepended to `PATH` first.
+
+That prepend matters more than it looks. A compositor spawns the shell with a
+minimal environment, and `bash -l` sources only your *login* profile — on many
+setups `~/.local/bin` is added by `.bashrc` instead, which a login shell never
+reads. So the conventional home for user scripts is invisible to the widget
+unless it is added back explicitly, and a default of `agenda --next-json` fails
+with exit 127 despite `agenda` working perfectly in your terminal.
+
+If your provider lives somewhere else entirely, give `agendaCommand` an absolute
+path — `$HOME` expands normally:
+
+```json
+{ "agendaCommand": "$HOME/src/scripts/my-agenda --json" }
+```
 
 ## Mouse
 

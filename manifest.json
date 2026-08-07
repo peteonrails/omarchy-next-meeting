@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "peteonrails.next-meeting",
   "name": "Next Meeting",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "Pete Jackson",
   "license": "MIT",
-  "description": "Always-visible \"Next: in 12m · Standup\" bar label fed by any command that prints the documented JSON. Pulses when a meeting is imminent or running; click to open or join it.",
+  "description": "Always-visible \"Next: in 12m \u00b7 Standup\" bar label fed by any command that prints the documented JSON. Pulses when a meeting is imminent or running; click to open or join it.",
   "homepage": "https://github.com/peteonrails/omarchy-next-meeting",
   "repository": "https://github.com/peteonrails/omarchy-next-meeting",
   "keywords": [
@@ -44,7 +44,7 @@
       {
         "key": "openCommand",
         "type": "string",
-        "label": "Open an event — {{url}} and {{title}} are substituted",
+        "label": "Open an event \u2014 {{url}} and {{title}} are substituted",
         "defaultValue": "xdg-open {{url}}"
       },
       {
@@ -56,7 +56,7 @@
       {
         "key": "agendaViewCommand",
         "type": "string",
-        "label": "Right-click command — show the full agenda",
+        "label": "Right-click command \u2014 show the full agenda",
         "defaultValue": "omarchy-launch-floating-terminal-with-presentation agenda"
       },
       {

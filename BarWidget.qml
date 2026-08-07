@@ -66,10 +66,17 @@ BarWidget {
     if (!proc.running) proc.running = true
   }
 
-  // Any command printing the documented JSON on stdout works here -- see
-  // README. Run through `bash -lc` so a login PATH applies and a plain
-  // `agenda` resolves from ~/.local/bin without the path being baked in.
+  // Any command printing the documented JSON on stdout works here -- see README.
+  //
+  // ~/.local/bin is prepended explicitly. A desktop session's PATH is NOT the
+  // interactive-shell PATH: the compositor spawns the shell with a minimal
+  // environment, and `bash -l` only sources the login profile, which on many
+  // setups does not add ~/.local/bin (that happens later, in .bashrc). Without
+  // this, the conventional home for user scripts is invisible and the default
+  // command fails with 127.
   readonly property string agendaCommand: String(setting("agendaCommand", "agenda --next-json"))
+  readonly property string wrappedCommand:
+    "export PATH=\"$HOME/.local/bin:$HOME/bin:$PATH\"; " + agendaCommand
 
   // Tracks whether the most recent run produced usable output, so a missing or
   // broken agenda command surfaces as a visible state instead of leaving the
@@ -78,7 +85,7 @@ BarWidget {
 
   Process {
     id: proc
-    command: ["bash", "-lc", root.agendaCommand]
+    command: ["bash", "-lc", root.wrappedCommand]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
