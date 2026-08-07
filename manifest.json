@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "id": "peteonrails.next-meeting",
+  "name": "Next Meeting",
+  "version": "1.1.0",
+  "author": "Pete Jackson",
+  "license": "MIT",
+  "description": "Always-visible \"Next: in 12m · Standup\" bar label fed by any command that prints the documented JSON. Pulses when a meeting is imminent or running; click to open or join it.",
+  "homepage": "https://github.com/peteonrails/omarchy-next-meeting",
+  "repository": "https://github.com/peteonrails/omarchy-next-meeting",
+  "keywords": [
+    "calendar",
+    "meeting",
+    "agenda",
+    "gcalcli",
+    "bar-widget"
+  ],
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Next Meeting",
+    "description": "Upcoming meeting label with an urgent pulse",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "agendaCommand": "agenda --next-json",
+      "openCommand": "xdg-open {{url}}",
+      "joinCommand": "",
+      "agendaViewCommand": "omarchy-launch-floating-terminal-with-presentation agenda",
+      "maxTitleLength": 32
+    },
+    "schema": [
+      {
+        "key": "agendaCommand",
+        "type": "string",
+        "label": "Command printing the next-meeting JSON on stdout",
+        "defaultValue": "agenda --next-json"
+      },
+      {
+        "key": "openCommand",
+        "type": "string",
+        "label": "Open an event — {{url}} and {{title}} are substituted",
+        "defaultValue": "xdg-open {{url}}"
+      },
+      {
+        "key": "joinCommand",
+        "type": "string",
+        "label": "Join a video conference (blank = use the open command)",
+        "defaultValue": ""
+      },
+      {
+        "key": "agendaViewCommand",
+        "type": "string",
+        "label": "Right-click command — show the full agenda",
+        "defaultValue": "omarchy-launch-floating-terminal-with-presentation agenda"
+      },
+      {
+        "key": "maxTitleLength",
+        "type": "integer",
+        "label": "Truncate meeting titles beyond this many characters",
+        "min": 8,
+        "max": 120,
+        "defaultValue": 32
+      }
+    ]
+  }
+}
