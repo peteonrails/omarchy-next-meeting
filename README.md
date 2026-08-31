@@ -137,20 +137,21 @@ shell-quoted: `{{text}}` (the whole sentence), `{{title}}`, `{{start}}` and
 `{{text}}` and `{{start}}` render differently per channel: spoken for
 `announceCommand`, written as the calendar shows it for `notifyCommand`.
 
-The spoken form rewrites the start time, because punctuation a reader skims is
-punctuation a speech engine performs. A colon becomes a long pause, so `1:15pm`
-arrives as "one … fifteen p m"; two plain numbers are read as a time. The
-meridiem glued to the minutes is one mangled token, so it gets a space. On the
-hour the minutes go entirely — nobody says "twelve zero zero pm".
+The spoken form rewrites the start time as a person would read it aloud,
+because punctuation a reader skims is punctuation a speech engine performs. A
+colon becomes a long pause, a leading zero is read as "zero" rather than "oh",
+and on the hour nobody says "twelve zero zero pm".
 
 | `start_label` | spoken as |
 |---|---|
-| `1:15pm` | `1 15 pm` |
-| `9:05am` | `9 05 am` |
-| `12:00pm` | `12 pm` |
+| `9:05am` | `nine oh five am` |
+| `11:30am` | `eleven thirty am` |
+| `1:15pm` | `one fifteen pm` |
+| `12:00pm` | `twelve pm` |
 
-The minute count is pluralised too, and zero becomes "now" rather than "in 0
-minutes".
+A label that isn't a clock time is left alone apart from splitting the colon.
+The minute count is spelled out the same way, pluralised, and zero becomes
+"now" rather than "in 0 minutes".
 
 The default `announceCommand` is [`say`](https://ss64.com/mac/say.html)'s Linux
 habit: any command that speaks its argument works — `spd-say`, `espeak-ng`, a

@@ -289,23 +289,48 @@ BarWidget {
     announcedThresholds = kept
   }
 
-  function minutesPhrase(m) {
-    var n = Math.max(0, Math.round(m))
-    if (n <= 0) return "now"
-    if (n === 1) return "in 1 minute"
-    return "in " + n + " minutes"
+  // Small numbers as English words. Digits reach a speech engine as characters
+  // it has to guess at; words are unambiguous, and "oh" is how a person says a
+  // leading zero in a time.
+  function numberWord(n) {
+    var ones = ["zero", "one", "two", "three", "four", "five", "six", "seven",
+                "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+                "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+    var tens = ["twenty", "thirty", "forty", "fifty"]
+    var v = Math.floor(Math.abs(Number(n)))
+    if (isNaN(v)) return String(n)
+    if (v < 20) return ones[v]
+    if (v < 60) {
+      var rest = v % 10
+      return tens[Math.floor(v / 10) - 2] + (rest ? " " + ones[rest] : "")
+    }
+    return String(v)
   }
 
-  // Punctuation a speech engine reads badly. A colon becomes a long pause, so
-  // "1:15pm" arrives as "one ... fifteen p m"; two plain numbers are read as a
-  // time. The meridiem glued to the minutes is one mangled token, so it gets a
-  // space. On the hour drops the minutes entirely -- nobody says "two zero
-  // zero pm", and "2 00" is what the engine would be handed otherwise.
+  function minutesPhrase(m, spoken) {
+    var n = Math.max(0, Math.round(m))
+    if (n <= 0) return "now"
+    if (n === 1) return "in 1 minute".replace("1", spoken ? "one" : "1")
+    return "in " + (spoken ? numberWord(n) : n) + " minutes"
+  }
+
+  // A clock time as a person reads it aloud: "nine oh five am", "eleven thirty".
+  // Handing a speech engine the digits invites it to perform the punctuation --
+  // a colon becomes a long pause, and a leading zero is read as "zero" rather
+  // than "oh". On the hour the minutes go entirely; nobody says "twelve zero
+  // zero pm". Anything that isn't a clock time falls back to splitting the
+  // colon, which is still better than leaving it in.
   function spokenTime(label) {
-    return String(label || "")
-      .replace(/\s*([ap])\.?\s*m\.?$/i, " $1m")
-      .replace(/(\d):00\b/g, "$1")
-      .replace(/(\d):(\d)/g, "$1 $2")
+    var s = String(label || "").trim()
+    var parts = s.match(/^(\d{1,2}):(\d{2})\s*(?:([ap])\.?\s*m\.?)?$/i)
+    if (!parts) {
+      return s.replace(/\s*([ap])\.?\s*m\.?$/i, " $1m").replace(/(\d):(\d)/g, "$1 $2")
+    }
+    var minute = parseInt(parts[2], 10)
+    var out = numberWord(parseInt(parts[1], 10))
+    if (minute > 0) out += (minute < 10 ? " oh " : " ") + numberWord(minute)
+    if (parts[3]) out += " " + parts[3].toLowerCase() + "m"
+    return out
   }
 
   // The same sentence, tuned for its channel: spoken for the speakers, written
@@ -314,7 +339,7 @@ BarWidget {
     var when = spoken ? spokenTime(d.start_label) : String(d.start_label || "")
     return "Your meeting, " + String(d.title || "")
          + (when ? " at " + when : "")
-         + ", starts " + minutesPhrase(minutes) + "."
+         + ", starts " + minutesPhrase(minutes, spoken) + "."
   }
 
   function warningVars(d, minutes, spoken) {
