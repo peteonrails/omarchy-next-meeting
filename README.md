@@ -134,9 +134,23 @@ Both `announceCommand` and `notifyCommand` take four substitutions, all
 shell-quoted: `{{text}}` (the whole sentence), `{{title}}`, `{{start}}` and
 `{{minutes}}`.
 
-`{{text}}` is written to be *spoken*, not read — the meridiem is split off the
-start time (`12:30pm` → `12:30 pm`) because most speech engines otherwise read
-it as one mangled token, and the minute count is pluralised.
+`{{text}}` and `{{start}}` render differently per channel: spoken for
+`announceCommand`, written as the calendar shows it for `notifyCommand`.
+
+The spoken form rewrites the start time, because punctuation a reader skims is
+punctuation a speech engine performs. A colon becomes a long pause, so `1:15pm`
+arrives as "one … fifteen p m"; two plain numbers are read as a time. The
+meridiem glued to the minutes is one mangled token, so it gets a space. On the
+hour the minutes go entirely — nobody says "twelve zero zero pm".
+
+| `start_label` | spoken as |
+|---|---|
+| `1:15pm` | `1 15 pm` |
+| `9:05am` | `9 05 am` |
+| `12:00pm` | `12 pm` |
+
+The minute count is pluralised too, and zero becomes "now" rather than "in 0
+minutes".
 
 The default `announceCommand` is [`say`](https://ss64.com/mac/say.html)'s Linux
 habit: any command that speaks its argument works — `spd-say`, `espeak-ng`, a

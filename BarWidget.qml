@@ -296,17 +296,34 @@ BarWidget {
     return "in " + n + " minutes"
   }
 
-  // "12:30pm" is read as one mangled token by most speech engines; splitting
-  // the meridiem off gets it spoken as a time.
+  // Punctuation a speech engine reads badly. A colon becomes a long pause, so
+  // "1:15pm" arrives as "one ... fifteen p m"; two plain numbers are read as a
+  // time. The meridiem glued to the minutes is one mangled token, so it gets a
+  // space. On the hour drops the minutes entirely -- nobody says "two zero
+  // zero pm", and "2 00" is what the engine would be handed otherwise.
   function spokenTime(label) {
-    return String(label || "").replace(/\s*([ap])\.?\s*m\.?$/i, " $1m")
+    return String(label || "")
+      .replace(/\s*([ap])\.?\s*m\.?$/i, " $1m")
+      .replace(/(\d):00\b/g, "$1")
+      .replace(/(\d):(\d)/g, "$1 $2")
   }
 
-  function announcementText(d, minutes) {
-    var when = spokenTime(d.start_label)
+  // The same sentence, tuned for its channel: spoken for the speakers, written
+  // as the calendar shows it for a notification nobody has to listen to.
+  function announcementText(d, minutes, spoken) {
+    var when = spoken ? spokenTime(d.start_label) : String(d.start_label || "")
     return "Your meeting, " + String(d.title || "")
          + (when ? " at " + when : "")
          + ", starts " + minutesPhrase(minutes) + "."
+  }
+
+  function warningVars(d, minutes, spoken) {
+    return {
+      text: announcementText(d, minutes, spoken),
+      title: String(d.title || ""),
+      start: spoken ? spokenTime(d.start_label) : String(d.start_label || ""),
+      minutes: String(Math.max(0, Math.round(minutes)))
+    }
   }
 
   function maybeAnnounce() {
@@ -353,14 +370,10 @@ BarWidget {
   // two bars polling on offset timers can see 5 and 4 for the same crossing, so
   // keying the marker on it would let both through.
   function fireWarning(d, minutes, threshold) {
-    var vars = {
-      text: announcementText(d, minutes),
-      title: String(d.title || ""),
-      start: String(d.start_label || ""),
-      minutes: String(Math.max(0, Math.round(minutes)))
-    }
-    var speak = root.announceCommand ? expandVars(root.announceCommand, vars) : ""
-    var notify = root.notifyCommand ? expandVars(root.notifyCommand, vars) : ""
+    var speak = root.announceCommand
+      ? expandVars(root.announceCommand, warningVars(d, minutes, true)) : ""
+    var notify = root.notifyCommand
+      ? expandVars(root.notifyCommand, warningVars(d, minutes, false)) : ""
     var check = root.inMeetingCheckCommand
 
     var cmd = ""
