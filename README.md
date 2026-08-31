@@ -12,7 +12,8 @@ Next: (none)
 A meeting in progress leads with itself and names what follows — until that one
 is within `handoverMinutes` (10 by default), at which point it takes the whole
 label. The meeting you're sitting in is the one you already know about; the one
-you have to leave for is not.
+you have to leave for is not. Where meetings overlap and both have started, the
+later one takes the label outright.
 
 It pulses red when a meeting is within 5 minutes or already running, and turns
 green once you're in the meeting — either because you clicked the widget, or
@@ -49,7 +50,7 @@ optional except the ones noted.
 | `start_iso` | string | ISO 8601 start, e.g. `2026-08-07T12:00`. Used for day-of-week when the event is >24h out |
 | `start_label` | string | Human start time, e.g. `12:00pm`. Fallback display |
 | `minutes_until` | number | Minutes until start. Drives `in 12m` / `in 2h 5m` and the urgent pulse |
-| `ongoing` | boolean | Meeting is running now — renders `NOW` and pulses |
+| `ongoing` | boolean | Meeting is running now — renders `NOW` and pulses. Optional: a `minutes_until` at or below zero is treated as running regardless, so a provider that cannot see end times still renders correctly |
 | `url` | string | Opened on click |
 | `is_conference` | boolean | Event is a video call — selects `joinCommand` over `openCommand` |
 | `empty` | boolean | Nothing upcoming — renders `Next: (none)` |

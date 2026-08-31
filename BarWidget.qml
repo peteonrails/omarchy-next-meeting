@@ -28,7 +28,7 @@ BarWidget {
   }
   readonly property bool urgent: {
     if (!meeting || meeting.empty) return false
-    if (meeting.ongoing) return true
+    if (hasStarted(meeting) || hasStarted(following)) return true
     return meeting.minutes_until !== undefined && meeting.minutes_until <= 5
   }
 
@@ -39,8 +39,18 @@ BarWidget {
     return s.substring(0, max - 1) + "…"
   }
 
+  // An event has started when the provider says so, or when its own countdown
+  // has run out. Providers disagree on the flag -- one that cannot see an end
+  // time may never set it -- but a countdown at or below zero is unambiguous,
+  // and it is what stops the label rendering "in -7m".
+  function hasStarted(e) {
+    if (!e) return false
+    if (e.ongoing) return true
+    return e.minutes_until !== undefined && e.minutes_until <= 0
+  }
+
   function formatPrefix(d) {
-    if (d.ongoing) return "NOW"
+    if (hasStarted(d)) return "NOW"
     var m = d.minutes_until
     if (m === undefined) return d.start_label || ""
     if (m < 60) return "in " + m + "m"
@@ -62,8 +72,12 @@ BarWidget {
     // question the label should answer becomes "what comes after this one".
     // Once that one is close enough to need leaving for, it takes the whole
     // label -- the meeting you're sitting in is the one you already know about.
-    if (d.ongoing) {
+    if (hasStarted(d)) {
       var f = root.following
+      // Meetings overlap. When the following one has started too, it is the one
+      // you should be in, so it takes the label outright -- the earlier meeting
+      // is the one you are already late leaving.
+      if (hasStarted(f)) return "NOW: " + shortTitle(f.title)
       if (root.handoverMinutes > 0 && f && f.minutes_until !== undefined
           && f.minutes_until <= root.handoverMinutes)
         return "Next: " + formatPrefix(f) + "  ·  " + shortTitle(f.title)
@@ -85,7 +99,7 @@ BarWidget {
   readonly property var upcoming: {
     var d = meeting
     if (!d || d.empty || d.error || !d.title) return null
-    return d.ongoing ? following : d
+    return hasStarted(d) ? following : d
   }
 
   property bool acknowledged: false
@@ -436,7 +450,7 @@ BarWidget {
   // Green means "you're in it". Clicking the widget says so explicitly; so does
   // joining by any other route, which the presence check notices within 20s.
   readonly property bool joined: acknowledged || meetingAppRunning
-  readonly property bool inProgress: !!(meeting && meeting.ongoing && joined)
+  readonly property bool inProgress: !!(meeting && hasStarted(meeting) && joined)
   readonly property string inProgressColor: "#7eb56c"
 
   WidgetButton {
