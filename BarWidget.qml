@@ -10,6 +10,14 @@ BarWidget {
 
   property var meeting: null
 
+  // The event after the one being counted down, when the provider supplies it.
+  // Only used while the current meeting is running -- that's when "what's next"
+  // is the useful half of the label.
+  readonly property var following: {
+    var n = meeting && meeting.next
+    return (n && n.title) ? n : null
+  }
+
   readonly property string label: formatLabel(meeting)
   readonly property bool urgent: {
     if (!meeting || meeting.empty) return false
@@ -43,6 +51,13 @@ BarWidget {
     if (!d) return "Next: loading…"
     if (d.error) return d.exitCode === 127 ? "Next: agenda not found" : "Next: agenda error"
     if (d.empty || !d.title) return "Next: (none)"
+    // A running meeting leads with itself: the countdown is spent, so the
+    // question the label should answer becomes "what comes after this one".
+    if (d.ongoing) {
+      var now = "NOW: " + shortTitle(d.title)
+      if (!root.following) return now
+      return now + "  ·  Next: " + shortTitle(root.following.title) + " " + formatPrefix(root.following)
+    }
     return "Next: " + formatPrefix(d) + "  ·  " + shortTitle(d.title)
   }
 
@@ -55,28 +70,42 @@ BarWidget {
   }
 
   onMeetingChanged: {
+    // An empty key means the payload carries no event -- an error blip, or a
+    // finished day. Holding the previous key through it keeps a transient
+    // provider failure from clearing an acknowledgement or re-arming a warning
+    // that already fired for the meeting still on screen.
     var k = urgencyKey(meeting)
-    if (k !== lastUrgentKey) {
+    if (k !== "" && k !== lastUrgentKey) {
       lastUrgentKey = k
       acknowledged = false
+      // The agenda only ever moves forward, so thresholds fired for earlier
+      // meetings can never be consulted again.
+      announcedThresholds = ({})
     }
+    maybeAnnounce()
   }
 
   function refresh() {
     if (!proc.running) proc.running = true
   }
 
+  // ~/.local/bin is prepended explicitly in front of every command this widget
+  // runs. A desktop session's PATH is NOT the interactive-shell PATH: the
+  // compositor spawns the shell with a minimal environment, and `bash -l` only
+  // sources the login profile, which on many setups does not add ~/.local/bin
+  // (that happens later, in .bashrc). Without this, the conventional home for
+  // user scripts -- `agenda`, `say`, a join hook -- is invisible and the
+  // default command fails with 127.
+  readonly property string pathPrefix: "export PATH=\"$HOME/.local/bin:$HOME/bin:$PATH\"; "
+
+  function runCommand(cmd) {
+    if (!cmd || !root.bar) return
+    root.bar.run(root.pathPrefix + cmd)
+  }
+
   // Any command printing the documented JSON on stdout works here -- see README.
-  //
-  // ~/.local/bin is prepended explicitly. A desktop session's PATH is NOT the
-  // interactive-shell PATH: the compositor spawns the shell with a minimal
-  // environment, and `bash -l` only sources the login profile, which on many
-  // setups does not add ~/.local/bin (that happens later, in .bashrc). Without
-  // this, the conventional home for user scripts is invisible and the default
-  // command fails with 127.
   readonly property string agendaCommand: String(setting("agendaCommand", "agenda --next-json"))
-  readonly property string wrappedCommand:
-    "export PATH=\"$HOME/.local/bin:$HOME/bin:$PATH\"; " + agendaCommand
+  readonly property string wrappedCommand: pathPrefix + agendaCommand
 
   // Tracks whether the most recent run produced usable output, so a missing or
   // broken agenda command surfaces as a visible state instead of leaving the
@@ -128,6 +157,9 @@ BarWidget {
         copy.minutes_until = Math.max(0, copy.minutes_until - 0.5)
         copy.minutes_until = Math.round(copy.minutes_until)
       }
+      if (copy.next && copy.next.minutes_until !== undefined) {
+        copy.next.minutes_until = Math.max(0, Math.round(copy.next.minutes_until - 0.5))
+      }
       root.meeting = copy
     }
   }
@@ -157,19 +189,149 @@ BarWidget {
   // Replacements are supplied as FUNCTIONS on purpose: a plain string
   // replacement would let `$&`/`$1` sequences inside a shell-quoted title or
   // URL be reinterpreted by String.replace and corrupt the command.
+  function expandVars(tpl, vars) {
+    var out = String(tpl)
+    for (var key in vars) {
+      var quoted = Util.shellQuote(String(vars[key] === undefined ? "" : vars[key]))
+      out = out.replace(new RegExp("\\{\\{" + key + "\\}\\}", "g"),
+                        (function (v) { return function () { return v } })(quoted))
+    }
+    return out
+  }
+
   function expandCommand(tpl, title, url) {
-    return String(tpl)
-      .replace(/\{\{title\}\}/g, function () { return Util.shellQuote(String(title || "")) })
-      .replace(/\{\{url\}\}/g,   function () { return Util.shellQuote(String(url || "")) })
+    return expandVars(tpl, { title: title || "", url: url || "" })
   }
 
   function activateMeeting() {
-    if (!root.meeting || !root.meeting.url || !root.bar) return
+    if (!root.meeting || !root.meeting.url) return
     var tpl = root.willJoin ? root.joinCommand : root.openCommand
-    root.bar.run(expandCommand(tpl, root.meeting.title || "", root.meeting.url))
+    root.runCommand(expandCommand(tpl, root.meeting.title || "", root.meeting.url))
   }
 
-  readonly property bool inProgressClicked: !!(meeting && meeting.ongoing && acknowledged)
+  // ---------------------------------------------------------------------
+  // Warnings
+  //
+  // A spoken warning is the right channel while you're at the desk and wrong
+  // the moment you're already in a call -- the microphone would carry it to
+  // everyone else. So the check command decides: exit 0 ("a meeting app is
+  // up") routes the warning to a notification instead of the speakers.
+  // ---------------------------------------------------------------------
+  readonly property string announceCommand: String(setting("announceCommand", "say {{text}}"))
+  readonly property string notifyCommand: String(
+    setting("notifyCommand", "notify-send -u critical -a 'Next Meeting' {{title}} {{text}}"))
+  // Exit 0 == "you are already in a call". Covers both a native Zoom binary
+  // and Zoom opened as a browser web app, whose window class carries the
+  // host (chrome-app.zoom.us__...). Matched on class, never title, so a
+  // terminal that merely mentions zoom does not count as a meeting.
+  readonly property string inMeetingCheckCommand: String(setting("inMeetingCheckCommand",
+    "pgrep -x zoom >/dev/null 2>&1 || hyprctl clients -j 2>/dev/null | grep -qi '\"class\": *\"[^\"]*zoom'"))
+
+  // Minutes-before-start at which to warn, largest first. Each threshold fires
+  // at most once per meeting.
+  readonly property var announceMinutes: {
+    var out = []
+    var parts = String(setting("announceMinutes", "5,1")).split(/[^0-9]+/)
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i] === "") continue
+      var n = parseInt(parts[i], 10)
+      if (!isNaN(n) && n >= 0 && out.indexOf(n) === -1) out.push(n)
+    }
+    out.sort(function (a, b) { return b - a })
+    return out
+  }
+
+  // "<meeting key>@<threshold>" -> true. Keyed by meeting so a threshold can
+  // fire again for the next event, and so the 60s poll landing twice on the
+  // same minute cannot double-announce.
+  property var announcedThresholds: ({})
+
+  function minutesPhrase(m) {
+    var n = Math.max(0, Math.round(m))
+    if (n <= 0) return "now"
+    if (n === 1) return "in 1 minute"
+    return "in " + n + " minutes"
+  }
+
+  // "12:30pm" is read as one mangled token by most speech engines; splitting
+  // the meridiem off gets it spoken as a time.
+  function spokenTime(label) {
+    return String(label || "").replace(/\s*([ap])\.?\s*m\.?$/i, " $1m")
+  }
+
+  function announcementText(d, minutes) {
+    var when = spokenTime(d.start_label)
+    return "Your meeting, " + String(d.title || "")
+         + (when ? " at " + when : "")
+         + ", starts " + minutesPhrase(minutes) + "."
+  }
+
+  function maybeAnnounce() {
+    var d = root.meeting
+    if (!d || d.empty || d.error || !d.title || d.ongoing) return
+    var m = d.minutes_until
+    if (m === undefined || m === null || m < 0) return
+
+    var thresholds = root.announceMinutes
+    for (var i = 0; i < thresholds.length; i++) {
+      if (m > thresholds[i]) continue
+      var mark = root.lastUrgentKey + "@" + thresholds[i]
+      if (root.announcedThresholds[mark]) continue
+      root.announcedThresholds[mark] = true
+      root.fireWarning(d, m)
+      // Only the largest unfired threshold speaks. A shell that starts up two
+      // minutes before a meeting warns once, not once per threshold it has
+      // already slept through.
+      return
+    }
+  }
+
+  function fireWarning(d, minutes) {
+    var vars = {
+      text: announcementText(d, minutes),
+      title: String(d.title || ""),
+      start: String(d.start_label || ""),
+      minutes: String(Math.max(0, Math.round(minutes)))
+    }
+    var speak = root.announceCommand ? expandVars(root.announceCommand, vars) : ""
+    var notify = root.notifyCommand ? expandVars(root.notifyCommand, vars) : ""
+    var check = root.inMeetingCheckCommand
+
+    var cmd = ""
+    if (speak && notify && check) cmd = "if " + check + "; then " + notify + "; else " + speak + "; fi"
+    else if (speak && check && !notify) cmd = "if " + check + "; then :; else " + speak + "; fi"
+    else cmd = speak || notify
+
+    root.runCommand(cmd)
+  }
+
+  // Polled only while a meeting is imminent or running -- there is no reason to
+  // scan the process table the rest of the day.
+  property bool meetingAppRunning: false
+
+  Process {
+    id: presenceProc
+    command: ["bash", "-lc", root.pathPrefix + root.inMeetingCheckCommand]
+    onExited: function (exitCode) {
+      root.meetingAppRunning = (exitCode === 0)
+    }
+  }
+
+  Timer {
+    id: presenceTimer
+    interval: 20000
+    running: root.inMeetingCheckCommand !== "" && !!root.meeting && !root.meeting.empty
+             && (root.urgent || !!root.meeting.ongoing)
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: if (!presenceProc.running) presenceProc.running = true
+    onRunningChanged: if (!running) root.meetingAppRunning = false
+  }
+
+  // Green means "you're in it". Clicking the widget says so explicitly; so does
+  // joining by any other route, which the presence check notices within 20s.
+  readonly property bool joined: acknowledged || meetingAppRunning
+  readonly property bool inProgress: !!(meeting && meeting.ongoing && joined)
   readonly property string inProgressColor: "#7eb56c"
 
   WidgetButton {
@@ -178,14 +340,14 @@ BarWidget {
     bar: root.bar
     text: root.label
     active: root.urgent
-    activeColor: root.inProgressClicked ? root.inProgressColor : (root.bar ? root.bar.urgent : "#a55555")
-    foreground:  root.inProgressClicked ? root.inProgressColor : (root.bar ? root.bar.barForeground : "#cacccc")
+    activeColor: root.inProgress ? root.inProgressColor : (root.bar ? root.bar.urgent : "#a55555")
+    foreground:  root.inProgress ? root.inProgressColor : (root.bar ? root.bar.barForeground : "#cacccc")
     tooltipText: root.tooltipForLink
 
     onPressed: function(b) {
       root.acknowledged = true
       if (b === Qt.RightButton) {
-        if (root.bar && root.agendaViewCommand) root.bar.run(root.agendaViewCommand)
+        root.runCommand(root.agendaViewCommand)
       } else {
         root.activateMeeting()
       }
@@ -195,7 +357,7 @@ BarWidget {
   SequentialAnimation {
     id: blinkAnim
     loops: Animation.Infinite
-    running: root.urgent && !root.acknowledged
+    running: root.urgent && !root.joined
     alwaysRunToEnd: true
     NumberAnimation { target: button; property: "opacity"; to: 0.25; duration: 450; easing.type: Easing.InOutQuad }
     NumberAnimation { target: button; property: "opacity"; to: 1.0;  duration: 450; easing.type: Easing.InOutQuad }

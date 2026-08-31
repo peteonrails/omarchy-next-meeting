@@ -4,18 +4,23 @@ An always-visible bar label showing what's next on your calendar:
 
 ```
 Next: in 12m  ·  Standup
-Next: NOW  ·  Design review
+NOW: Design review  ·  Next: Retro in 48m
 Next: (none)
 ```
 
-It pulses when a meeting is within 5 minutes or already running, and stops the
-moment you click it. Clicking opens the event — or runs a custom join command
-for video conferences.
+It pulses red when a meeting is within 5 minutes or already running, and turns
+green once you're in the meeting — either because you clicked the widget, or
+because it noticed a call app running. Clicking opens the event, or runs a
+custom join command for video conferences.
+
+Five minutes and one minute out, it **says the meeting out loud**. If you're
+already on a call it sends a critical notification instead, so the warning
+doesn't go down your microphone to everyone else.
 
 **This widget has no calendar integration of its own.** It runs a command you
 choose and reads JSON from its stdout. That means it works with Google
 Calendar, CalDAV, Outlook, a local `.ics` file, or anything else you can
-persuade to emit six fields — see [the contract](#the-json-contract).
+persuade to emit a handful of fields — see [the contract](#the-json-contract).
 
 ## Install
 
@@ -43,11 +48,19 @@ optional except the ones noted.
 | `is_conference` | boolean | Event is a video call — selects `joinCommand` over `openCommand` |
 | `empty` | boolean | Nothing upcoming — renders `Next: (none)` |
 | `error` | boolean | Provider failed — renders `Next: agenda error` |
+| `next` | object | The event *after* this one. Shown while `ongoing` is true. Takes `title`, `start_iso`, `start_label` and `minutes_until` — same meanings as above |
 
 A minimal working example:
 
 ```json
 {"title":"Standup","start_iso":"2026-08-07T12:00","start_label":"12:00pm","minutes_until":12,"ongoing":false,"url":"https://meet.example.com/abc","is_conference":true}
+```
+
+A meeting in progress, with the one after it:
+
+```json
+{"title":"Design review","start_label":"12:00pm","ongoing":true,"minutes_until":0,
+ "next":{"title":"Retro","start_iso":"2026-08-07T13:00","start_label":"1:00pm","minutes_until":48}}
 ```
 
 Nothing upcoming:
@@ -72,8 +85,8 @@ wrapper. Any script works — here's the shape of a trivial one:
 #!/bin/bash
 # agenda --next-json
 gcalcli --nocolor agenda --nostarted --details=all --tsv "$(date +%Y-%m-%dT%H:%M)" "$(date -d '+7 days' +%Y-%m-%d)" \
-  | head -1 \
-  | your-tsv-to-json-filter
+  | head -2 \
+  | your-tsv-to-json-filter   # first row is the event, second becomes "next"
 ```
 
 ## Settings
@@ -84,6 +97,10 @@ gcalcli --nocolor agenda --nostarted --details=all --tsv "$(date +%Y-%m-%dT%H:%M
 | `openCommand` | string | `xdg-open {{url}}` | Opens an event |
 | `joinCommand` | string | `""` | Used instead of `openCommand` when `is_conference` is true. Blank falls back to `openCommand` |
 | `agendaViewCommand` | string | `omarchy-launch-floating-terminal-with-presentation agenda` | Right-click — show the full agenda |
+| `announceMinutes` | string | `5,1` | Minutes before the start at which to warn. Blank disables warnings |
+| `announceCommand` | string | `say {{text}}` | Speaks the warning |
+| `notifyCommand` | string | `notify-send -u critical -a 'Next Meeting' {{title}} {{text}}` | Used instead of `announceCommand` when `inMeetingCheckCommand` succeeds |
+| `inMeetingCheckCommand` | string | a Zoom check — see below | Exit 0 means "a call is already running" |
 | `maxTitleLength` | integer | `32` | Titles longer than this are ellipsised |
 
 ### Command templates
@@ -98,6 +115,61 @@ transcriber:
 ```json
 { "joinCommand": "voxtype meeting start --title {{title}} && xdg-open {{url}}" }
 ```
+
+## Warnings
+
+Each threshold in `announceMinutes` fires once per meeting. `5,1` gives you the
+five-minute heads-up and the one-minute "go now":
+
+> Your meeting, Weekly Leadership Team Meeting at 11:00 am, starts in 5 minutes.
+
+Both `announceCommand` and `notifyCommand` take four substitutions, all
+shell-quoted: `{{text}}` (the whole sentence), `{{title}}`, `{{start}}` and
+`{{minutes}}`.
+
+`{{text}}` is written to be *spoken*, not read — the meridiem is split off the
+start time (`12:30pm` → `12:30 pm`) because most speech engines otherwise read
+it as one mangled token, and the minute count is pluralised.
+
+The default `announceCommand` is [`say`](https://ss64.com/mac/say.html)'s Linux
+habit: any command that speaks its argument works — `spd-say`, `espeak-ng`, a
+Piper or Kokoro wrapper. Set it blank to warn only by notification.
+
+### Not speaking over a call
+
+Speech is the wrong channel once you're already in a meeting; your microphone
+would carry it to everyone else. `inMeetingCheckCommand` decides. It runs just
+before the warning, and **exit 0 routes the warning to `notifyCommand` instead
+of the speakers**.
+
+The default covers Zoom two ways — a native `zoom` binary, and Zoom opened as a
+browser web app, whose window class carries the host:
+
+```bash
+pgrep -x zoom >/dev/null 2>&1 || hyprctl clients -j 2>/dev/null | grep -qi '"class": *"[^"]*zoom'
+```
+
+It matches on window *class*, never title, so a terminal that happens to mention
+zoom is not mistaken for a call. Widen it for whatever else you use:
+
+```json
+{ "inMeetingCheckCommand": "pgrep -x 'zoom|Slack|teams' >/dev/null 2>&1" }
+```
+
+Set it blank to always speak.
+
+## Colours
+
+| State | Look |
+|---|---|
+| More than 5 minutes out | Normal bar foreground |
+| Within 5 minutes, or running | Red, pulsing |
+| Running, and you're in it | Green, steady |
+
+"You're in it" means either you clicked the widget, or `inMeetingCheckCommand`
+succeeded — so joining from the Zoom app, a calendar reminder, or a link
+someone pasted in Slack settles the widget just as clicking it does. That check
+polls every 20 seconds, and only while a meeting is imminent or running.
 
 ### A note on PATH
 
@@ -123,6 +195,7 @@ path — `$HOME` expands normally:
 | Action | Result |
 |---|---|
 | Left click | Opens/joins the meeting, and stops the pulse |
+| (no click) | The pulse stops on its own once `inMeetingCheckCommand` sees a call |
 | Right click | Runs `agendaViewCommand` |
 
 ## Requirements
@@ -130,6 +203,8 @@ path — `$HOME` expands normally:
 - Omarchy 4 (Quattro) or newer
 - A command satisfying the JSON contract
 - `xdg-open` for the default open behaviour
+- Something that speaks — `say`, `spd-say`, `espeak-ng` — for spoken warnings
+- `notify-send` and `hyprctl` for the notification fallback and its Zoom check
 
 ## License
 
