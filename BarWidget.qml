@@ -19,6 +19,10 @@ BarWidget {
   }
 
   readonly property string label: formatLabel(meeting)
+
+  // Minutes before the following meeting at which it displaces the running one
+  // from the label.
+  readonly property int handoverMinutes: 10
   readonly property bool urgent: {
     if (!meeting || meeting.empty) return false
     if (meeting.ongoing) return true
@@ -53,10 +57,18 @@ BarWidget {
     if (d.empty || !d.title) return "Next: (none)"
     // A running meeting leads with itself: the countdown is spent, so the
     // question the label should answer becomes "what comes after this one".
+    // Once that one is close enough to need leaving for, it takes the whole
+    // label -- the meeting you're sitting in is the one you already know about.
     if (d.ongoing) {
+      var f = root.following
+      if (f && f.minutes_until !== undefined && f.minutes_until <= root.handoverMinutes)
+        return "Next: " + formatPrefix(f) + "  ·  " + shortTitle(f.title)
       var now = "NOW: " + shortTitle(d.title)
-      if (!root.following) return now
-      return now + "  ·  Next: " + shortTitle(root.following.title) + " " + formatPrefix(root.following)
+      if (!f) return now
+      // A provider may name the following event without dating it; say what it
+      // knows rather than trailing an empty gap.
+      var when = formatPrefix(f)
+      return now + "  ·  Next: " + shortTitle(f.title) + (when ? " " + when : "")
     }
     return "Next: " + formatPrefix(d) + "  ·  " + shortTitle(d.title)
   }
