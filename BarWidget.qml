@@ -324,7 +324,7 @@ BarWidget {
       var mark = key + "@" + thresholds[i]
       if (root.announcedThresholds[mark]) continue
       root.announcedThresholds[mark] = true
-      root.fireWarning(d, m)
+      root.fireWarning(d, m, thresholds[i])
       // Only the largest unfired threshold speaks. A shell that starts up two
       // minutes before a meeting warns once, not once per threshold it has
       // already slept through.
@@ -332,7 +332,27 @@ BarWidget {
     }
   }
 
-  function fireWarning(d, minutes) {
+  // One bar is instantiated per monitor, each with its own timers and its own
+  // fired-threshold map, so a two-screen desk speaks every warning twice. In-QML
+  // state cannot fix that -- the instances share nothing. The claim is therefore
+  // made where the side effect happens: `mkdir` either creates the marker or
+  // fails, atomically, so exactly one instance proceeds and the rest exit
+  // quietly. Markers live in the session runtime dir and so are discarded at
+  // logout; stale ones are swept after four hours to bound the directory.
+  function singleFireGuard(eventKey, threshold) {
+    var marker = String(threshold + "-" + eventKey)
+      .replace(/[^A-Za-z0-9]+/g, "_").substring(0, 120)
+    var dir = "\"${XDG_RUNTIME_DIR:-/tmp}/omarchy-next-meeting\""
+    return "d=" + dir + "; mkdir -p \"$d\" 2>/dev/null; "
+         + "find \"$d\" -mindepth 1 -maxdepth 1 -type d -mmin +240 -exec rmdir {} + 2>/dev/null; "
+         + "mkdir \"$d\"/" + Util.shellQuote(marker) + " 2>/dev/null || exit 0; "
+  }
+
+  // `threshold` is the configured step this warning belongs to, and is what the
+  // marker is keyed on. `minutes` is what this instance happened to observe --
+  // two bars polling on offset timers can see 5 and 4 for the same crossing, so
+  // keying the marker on it would let both through.
+  function fireWarning(d, minutes, threshold) {
     var vars = {
       text: announcementText(d, minutes),
       title: String(d.title || ""),
@@ -347,8 +367,9 @@ BarWidget {
     if (speak && notify && check) cmd = "if " + check + "; then " + notify + "; else " + speak + "; fi"
     else if (speak && check && !notify) cmd = "if " + check + "; then :; else " + speak + "; fi"
     else cmd = speak || notify
+    if (!cmd) return
 
-    root.runCommand(cmd)
+    root.runCommand(singleFireGuard(urgencyKey(d), threshold) + cmd)
   }
 
   // Polled only while a meeting is imminent or running -- there is no reason to

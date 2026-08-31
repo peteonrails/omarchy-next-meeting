@@ -142,6 +142,19 @@ The default `announceCommand` is [`say`](https://ss64.com/mac/say.html)'s Linux
 habit: any command that speaks its argument works — `spd-say`, `espeak-ng`, a
 Piper or Kokoro wrapper. Set it blank to warn only by notification.
 
+### One warning, however many bars
+
+Omarchy instantiates a bar per monitor, so a two-screen desk runs two copies of
+this widget — each with its own timers, each reaching the five-minute mark on
+its own. They share no state, so nothing in the widget can stop them both
+warning you.
+
+The claim is made at the side effect instead. Before speaking, the command
+`mkdir`s a marker named for the event and the threshold; `mkdir` either creates
+the directory or fails, atomically, so exactly one instance proceeds and the
+rest exit quietly. Markers live under `$XDG_RUNTIME_DIR` and are discarded at
+logout, with stale ones swept after four hours.
+
 ### Not speaking over a call
 
 Speech is the wrong channel once you're already in a meeting; your microphone
