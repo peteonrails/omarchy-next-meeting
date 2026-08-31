@@ -10,9 +10,9 @@ Next: (none)
 ```
 
 A meeting in progress leads with itself and names what follows — until that one
-is within 10 minutes, at which point it takes the whole label. The meeting
-you're sitting in is the one you already know about; the one you have to leave
-for is not.
+is within `handoverMinutes` (10 by default), at which point it takes the whole
+label. The meeting you're sitting in is the one you already know about; the one
+you have to leave for is not.
 
 It pulses red when a meeting is within 5 minutes or already running, and turns
 green once you're in the meeting — either because you clicked the widget, or
@@ -54,7 +54,7 @@ optional except the ones noted.
 | `is_conference` | boolean | Event is a video call — selects `joinCommand` over `openCommand` |
 | `empty` | boolean | Nothing upcoming — renders `Next: (none)` |
 | `error` | boolean | Provider failed — renders `Next: agenda error` |
-| `next` | object | The event *after* this one. Shown while `ongoing` is true, and displaces it entirely inside 10 minutes. Takes `title`, `start_iso`, `start_label` and `minutes_until` — same meanings as above |
+| `next` | object | The event *after* this one. Shown while `ongoing` is true, and displaces it entirely inside `handoverMinutes`. Takes `title`, `start_iso`, `start_label` and `minutes_until` — same meanings as above |
 
 A minimal working example:
 
@@ -107,6 +107,7 @@ gcalcli --nocolor agenda --nostarted --details=all --tsv "$(date +%Y-%m-%dT%H:%M
 | `announceCommand` | string | `say {{text}}` | Speaks the warning |
 | `notifyCommand` | string | `notify-send -u critical -a 'Next Meeting' {{title}} {{text}}` | Used instead of `announceCommand` when `inMeetingCheckCommand` succeeds |
 | `inMeetingCheckCommand` | string | a Zoom check — see below | Exit 0 means "a call is already running" |
+| `handoverMinutes` | integer | `10` | While a meeting is running, the following one takes the whole label this many minutes before it starts. `0` keeps the running meeting on screen for its full length |
 | `maxTitleLength` | integer | `32` | Titles longer than this are ellipsised |
 
 ### Command templates

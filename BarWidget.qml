@@ -21,8 +21,11 @@ BarWidget {
   readonly property string label: formatLabel(meeting)
 
   // Minutes before the following meeting at which it displaces the running one
-  // from the label.
-  readonly property int handoverMinutes: 10
+  // from the label. 0 keeps the running meeting on screen for its whole length.
+  readonly property int handoverMinutes: {
+    var n = parseInt(setting("handoverMinutes", 10), 10)
+    return (isNaN(n) || n < 0) ? 10 : n
+  }
   readonly property bool urgent: {
     if (!meeting || meeting.empty) return false
     if (meeting.ongoing) return true
@@ -61,7 +64,8 @@ BarWidget {
     // label -- the meeting you're sitting in is the one you already know about.
     if (d.ongoing) {
       var f = root.following
-      if (f && f.minutes_until !== undefined && f.minutes_until <= root.handoverMinutes)
+      if (root.handoverMinutes > 0 && f && f.minutes_until !== undefined
+          && f.minutes_until <= root.handoverMinutes)
         return "Next: " + formatPrefix(f) + "  ·  " + shortTitle(f.title)
       var now = "NOW: " + shortTitle(d.title)
       if (!f) return now
