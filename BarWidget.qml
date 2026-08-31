@@ -77,6 +77,17 @@ BarWidget {
     return "Next: " + formatPrefix(d) + "  ·  " + shortTitle(d.title)
   }
 
+  // The event a warning is about: whatever is being counted down. While a
+  // meeting is running that is the FOLLOWING event, not the one on screen --
+  // and a back-to-back day is exactly when the warning matters most, because
+  // the meeting you're in runs right up to the start of the one you're late
+  // for. Reading warnings off the main slot alone stays silent all day.
+  readonly property var upcoming: {
+    var d = meeting
+    if (!d || d.empty || d.error || !d.title) return null
+    return d.ongoing ? following : d
+  }
+
   property bool acknowledged: false
   property string lastUrgentKey: ""
 
@@ -94,9 +105,7 @@ BarWidget {
     if (k !== "" && k !== lastUrgentKey) {
       lastUrgentKey = k
       acknowledged = false
-      // The agenda only ever moves forward, so thresholds fired for earlier
-      // meetings can never be consulted again.
-      announcedThresholds = ({})
+      pruneAnnounced()
     }
     maybeAnnounce()
   }
@@ -257,10 +266,28 @@ BarWidget {
     return out
   }
 
-  // "<meeting key>@<threshold>" -> true. Keyed by meeting so a threshold can
-  // fire again for the next event, and so the 60s poll landing twice on the
-  // same minute cannot double-announce.
+  // "<event key>@<threshold>" -> true. Keyed by the event WARNED ABOUT, not by
+  // whatever occupies the main slot: an event warned about while it sat in
+  // `next` is promoted to the main slot when the meeting before it ends, and
+  // must not re-arm a threshold it has already crossed. Keying it this way also
+  // means the 60s poll landing twice on the same minute cannot double-announce.
   property var announcedThresholds: ({})
+
+  // Only the two live events can still be warned about, so anything else is
+  // dead weight; dropping it bounds the map across a long-running shell.
+  function pruneAnnounced() {
+    var live = [urgencyKey(meeting), urgencyKey(following)]
+    var kept = ({})
+    for (var mark in announcedThresholds) {
+      for (var i = 0; i < live.length; i++) {
+        if (live[i] !== "" && mark.indexOf(live[i] + "@") === 0) {
+          kept[mark] = true
+          break
+        }
+      }
+    }
+    announcedThresholds = kept
+  }
 
   function minutesPhrase(m) {
     var n = Math.max(0, Math.round(m))
@@ -283,15 +310,18 @@ BarWidget {
   }
 
   function maybeAnnounce() {
-    var d = root.meeting
-    if (!d || d.empty || d.error || !d.title || d.ongoing) return
+    var d = root.upcoming
+    if (!d || !d.title) return
     var m = d.minutes_until
     if (m === undefined || m === null || m < 0) return
+
+    var key = urgencyKey(d)
+    if (key === "") return
 
     var thresholds = root.announceMinutes
     for (var i = 0; i < thresholds.length; i++) {
       if (m > thresholds[i]) continue
-      var mark = root.lastUrgentKey + "@" + thresholds[i]
+      var mark = key + "@" + thresholds[i]
       if (root.announcedThresholds[mark]) continue
       root.announcedThresholds[mark] = true
       root.fireWarning(d, m)
