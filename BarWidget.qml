@@ -128,6 +128,26 @@ BarWidget {
     if (!proc.running) proc.running = true
   }
 
+  // Escape for interpolation into a double-quoted shell word.
+  function shellDoubleQuoted(path) {
+    return String(path || "").replace(/([\\$"`])/g, "\\$1")
+  }
+
+  // Where this plugin was installed, so the provider bundled in ./bin can be
+  // found without the user installing anything. Qt resolves the URL relative to
+  // this QML file, which is correct wherever the plugin lives -- a dev symlink,
+  // the first-party tree. The id-derived path is a second guess for the case
+  // where the URL is not a plain file, and costs nothing to carry.
+  readonly property string bundledBin: {
+    var dirs = []
+    var url = String(Qt.resolvedUrl("."))
+    if (url.indexOf("file://") === 0) {
+      dirs.push(shellDoubleQuoted(decodeURIComponent(url.substring(7)).replace(/\/+$/, "") + "/bin"))
+    }
+    if (moduleName) dirs.push("$HOME/.config/omarchy/plugins/" + moduleName + "/bin")
+    return dirs.join(":")
+  }
+
   // ~/.local/bin is prepended explicitly in front of every command this widget
   // runs. A desktop session's PATH is NOT the interactive-shell PATH: the
   // compositor spawns the shell with a minimal environment, and `bash -l` only
@@ -135,7 +155,13 @@ BarWidget {
   // (that happens later, in .bashrc). Without this, the conventional home for
   // user scripts -- `agenda`, `say`, a join hook -- is invisible and the
   // default command fails with 127.
-  readonly property string pathPrefix: "export PATH=\"$HOME/.local/bin:$HOME/bin:$PATH\"; "
+  //
+  // The plugin's own bin/ is APPENDED, not prepended: the bundled provider is
+  // the fallback that makes a fresh install work, and must never shadow the
+  // `agenda` a user already runs from their own PATH.
+  readonly property string pathPrefix:
+    "export PATH=\"$HOME/.local/bin:$HOME/bin:$PATH"
+    + (bundledBin ? ":" + bundledBin : "") + "\"; "
 
   function runCommand(cmd) {
     if (!cmd || !root.bar) return

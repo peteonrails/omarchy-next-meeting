@@ -83,10 +83,24 @@ last good payload is kept if a later run fails or emits malformed JSON.
 If the command exits non-zero without producing output, the label shows
 `Next: agenda not found` for exit 127, `Next: agenda error` otherwise.
 
-### Reference provider
+### The bundled provider
 
-The author's provider is a [gcalcli](https://github.com/insanum/gcalcli)
-wrapper. Any script works — here's the shape of a trivial one:
+The plugin ships one, in `bin/agenda` — a [gcalcli](https://github.com/insanum/gcalcli)
+wrapper that emits the contract above. It needs `gcalcli` (authenticated) and
+Python 3; it has no other dependencies.
+
+You do not have to configure anything to use it. The plugin's own `bin/` is
+**appended** to `PATH`, so `agenda --next-json` finds the bundled copy on a
+fresh install, while an `agenda` already on your `PATH` continues to win. That
+ordering is deliberate: bundling is there to make the plugin work out of the
+box, not to override a provider you maintain yourself.
+
+To use something else entirely, point `agendaCommand` at it — see
+[the contract](#the-json-contract).
+
+### Rolling your own
+
+Any script works — here's the shape of a trivial one:
 
 ```bash
 #!/bin/bash
@@ -237,7 +251,8 @@ path — `$HOME` expands normally:
 ## Requirements
 
 - Omarchy 4 (Quattro) or newer
-- A command satisfying the JSON contract
+- A command satisfying the JSON contract — or nothing, to use the bundled
+  provider, which needs Python 3 and an authenticated `gcalcli`
 - `xdg-open` for the default open behaviour
 - Something that speaks — `say`, `spd-say`, `espeak-ng` — for spoken warnings
 - `notify-send` and `hyprctl` for the notification fallback and its Zoom check

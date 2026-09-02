@@ -1,0 +1,499 @@
+#!/usr/bin/env python3
+"""Live-refreshing agenda view backed by gcalcli.
+
+Each event title is wrapped in an OSC 8 terminal hyperlink pointing to:
+  1. the Zoom/Meet/etc. conference URL (if Google Calendar has one), else
+  2. the Google Meet hangout link (if any), else
+  3. the Google Calendar event page (always available).
+
+Modern terminals (foot, kitty, alacritty, ghostty, wezterm) render OSC 8
+sequences as clickable links. Ctrl-click in foot, Cmd-click in iTerm, etc.
+
+Usage: agenda [interval_seconds] [--once] [--today] [-- gcalcli args...]
+  agenda           # default 60s refresh, custom render with hyperlinks
+  agenda 30        # 30s refresh
+  agenda --today   # today only (no tomorrow / rest of week)
+  agenda --once    # render once and exit (implied when not a TTY)
+  agenda 60 -- calw    # weekly grid via gcalcli (no link enrichment)
+"""
+
+from __future__ import annotations
+
+import csv
+import html
+import json
+import os
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import termios
+import tty
+import urllib.parse
+from datetime import datetime, timedelta
+
+DEFAULT_INTERVAL = 60
+
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+CYAN = "\033[36m"
+YELLOW = "\033[33m"
+HIDE_CURSOR = "\033[?25l"
+SHOW_CURSOR = "\033[?25h"
+CLEAR = "\033[2J\033[H"
+
+# Cleared for one-shot output to a pipe, so scripts get plain text.
+USE_ANSI = True
+
+
+def osc8(url: str, text: str) -> str:
+    if not url or not USE_ANSI:
+        return text
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def fmt_time(start_time: str) -> str:
+    if not start_time:
+        return "(all day)"
+    h, m = map(int, start_time.split(":"))
+    suffix = "am" if h < 12 else "pm"
+    h12 = h % 12 or 12
+    return f"{h12}:{m:02d}{suffix}"
+
+
+def fmt_day(d: str) -> str:
+    return datetime.strptime(d, "%Y-%m-%d").strftime("%a %b %d")
+
+
+def span_end(span: str, start: datetime) -> datetime:
+    """Exclusive end bound for a scoping span, measured from `start` (today).
+
+    "today" → tomorrow, "week" → +7 days, "month" → +1 calendar month.
+    """
+    if span == "today":
+        return start + timedelta(days=1)
+    if span == "week":
+        return start + timedelta(days=7)
+    if span == "month":
+        month = start.month % 12 + 1
+        year = start.year + (start.month // 12)
+        # Clamp the day so e.g. Jan 31 → Feb 28 doesn't overflow.
+        day = min(start.day, [31, 29 if year % 4 == 0 and (year % 100 or not year % 400)
+                              else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+        return start.replace(year=year, month=month, day=day)
+    raise ValueError(f"unknown span: {span}")
+
+
+def fetch_tsv(span: str | None = None) -> tuple[str | None, str | None]:
+    cmd = [
+        "gcalcli", "--nocolor", "agenda",
+    ]
+    # Constrain the query to [today, end) so gcalcli only returns events within
+    # the requested scope. gcalcli treats the end bound as exclusive.
+    if span:
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        start = today.strftime("%Y-%m-%d")
+        end = span_end(span, today).strftime("%Y-%m-%d")
+        cmd += [start, end]
+    cmd += [
+        "--tsv",
+        "--details", "conference",
+        "--details", "url",
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None, (proc.stderr.strip() or "gcalcli failed")
+    return proc.stdout, None
+
+
+def parse_dt(date_str: str, time_str: str) -> datetime | None:
+    if not date_str or not time_str:
+        return None
+    try:
+        return datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
+def now_rule(now: datetime, width: int) -> str:
+    label = now.strftime("%-I:%M%p").lower()
+    pad = max(0, width - len(label) - 1)
+    return f"{DIM}{'─' * pad} {label}{RESET}"
+
+
+def render(tsv: str) -> str:
+    now = datetime.now()
+    width = shutil.get_terminal_size((80, 24)).columns
+
+    events = []
+    for row in csv.DictReader(tsv.splitlines(), delimiter="\t"):
+        sd = row.get("start_date", "")
+        if not sd:
+            continue
+        title = row.get("title", "").strip()
+        if title == "Home" and not row.get("start_time"):
+            continue
+        events.append(row)
+
+    lines: list[str] = []
+    prev_date: str | None = None
+    rule_inserted = False
+
+    for row in events:
+        sd = row["start_date"]
+        end_dt = parse_dt(row.get("end_date", sd), row.get("end_time", ""))
+        is_past = end_dt is not None and end_dt < now
+
+        if not rule_inserted and not is_past:
+            # First event whose end is in the future (or all-day) — drop the rule
+            # right above it. Day header for that event gets emitted afterwards
+            # so the rule sits between the past block and the upcoming block.
+            lines.append(now_rule(now, width))
+            rule_inserted = True
+
+        if sd != prev_date:
+            if prev_date is not None:
+                lines.append("")
+            lines.append(f"{BOLD}{YELLOW}{fmt_day(sd)}{RESET}")
+            prev_date = sd
+
+        title = row.get("title", "").strip()
+        url = (
+            row.get("conference_uri")
+            or row.get("hangout_link")
+            or row.get("html_link")
+            or ""
+        )
+        time_str = fmt_time(row.get("start_time", ""))
+        linked = osc8(url, title)
+        line = f"  {time_str:>9}   {linked}"
+        if is_past:
+            line = f"{DIM}{line}{RESET}"
+        lines.append(line)
+
+    if not rule_inserted:
+        # All events are in the past (or no events at all) — rule goes at the bottom.
+        lines.append(now_rule(now, width))
+
+    return "\n".join(lines) if lines else "(no upcoming events)"
+
+
+def header(interval: int | None) -> str:
+    now = datetime.now().strftime("%a %d %b %Y  %H:%M:%S")
+    if interval is None:
+        return f"{BOLD}{CYAN}{now}{RESET}\n\n"
+    return f"{BOLD}{CYAN}{now}{RESET}  (refresh {interval}s, q/Ctrl-C to quit)\n\n"
+
+
+def now_rule_html(now: datetime) -> str:
+    label = now.strftime("%-I:%M%p").lower()
+    rule = "─" * 30
+    return f'<span style="color:#888">{rule} {label}</span>'
+
+
+def url_kind(row: dict, url: str) -> str:
+    """Classify the chosen URL.
+
+    "conference" — a live joinable meeting (Zoom, Meet, Teams, Webex …).
+    "calendar"   — the Google Calendar event-detail page (no live join).
+    Empty string for events with no link at all.
+    """
+    if not url:
+        return ""
+    if row.get("conference_uri") or row.get("hangout_link"):
+        return "conference"
+    # Fallback: pattern-match common conference hosts in case gcalcli stuffed
+    # the conference URL into the description / location field and not the
+    # canonical conference column.
+    if any(host in url for host in (
+        "zoom.us/", "meet.google.com/", "teams.microsoft.com/",
+        "teams.live.com/", "webex.com/", "whereby.com/",
+    )):
+        return "conference"
+    return "calendar"
+
+
+def meeting_link(title: str, url: str) -> str:
+    """Build the QML-side href for a conference link.
+
+    Format: `omarchy-meeting:<percent-encoded-title>:<percent-encoded-url>`.
+    The calendar popup's onLinkActivated handler decodes this, starts
+    `voxtype meeting start --title <title>`, then xdg-opens the real URL.
+    Calendar (non-conference) links are emitted as plain URLs so they
+    behave like normal hyperlinks.
+    """
+    t = urllib.parse.quote(title, safe="")
+    u = urllib.parse.quote(url, safe="")
+    return f"omarchy-meeting:{t}:{u}"
+
+
+def render_html(tsv: str) -> str:
+    """Single-shot HTML render for embedding in a QML TextEdit / RichText.
+
+    Events are emitted as `<a href="URL">title</a>` so the QML host can wire
+    `onLinkActivated` to xdg-open. The whole agenda is wrapped in `<pre>` so
+    the QML monospace font preserves column alignment.
+    """
+    now = datetime.now()
+
+    events = []
+    for row in csv.DictReader(tsv.splitlines(), delimiter="\t"):
+        sd = row.get("start_date", "")
+        if not sd:
+            continue
+        title = row.get("title", "").strip()
+        if title == "Home" and not row.get("start_time"):
+            continue
+        events.append(row)
+
+    lines: list[str] = []
+    prev_date: str | None = None
+    rule_inserted = False
+
+    for row in events:
+        sd = row["start_date"]
+        end_dt = parse_dt(row.get("end_date", sd), row.get("end_time", ""))
+        is_past = end_dt is not None and end_dt < now
+
+        if not rule_inserted and not is_past:
+            lines.append(now_rule_html(now))
+            rule_inserted = True
+
+        if sd != prev_date:
+            if prev_date is not None:
+                lines.append("")
+            lines.append(f'<b style="color:#c4b28a">{html.escape(fmt_day(sd))}</b>')
+            prev_date = sd
+
+        title = html.escape(row.get("title", "").strip())
+        url = (
+            row.get("conference_uri")
+            or row.get("hangout_link")
+            or row.get("html_link")
+            or ""
+        )
+        time_str = html.escape(fmt_time(row.get("start_time", "")))
+        if url:
+            kind = url_kind(row, url)
+            raw_title = row.get("title", "").strip()
+            if kind == "conference":
+                href = meeting_link(raw_title, url)
+            else:
+                href = url
+            # Inline white anchor colour — QML's RichText defaults links to
+            # blue, which is unreadable on the dark popup background.
+            anchor = (
+                f'<a href="{html.escape(href, quote=True)}" '
+                f'style="color:#ffffff">{title}</a>'
+            )
+        else:
+            anchor = title
+        line = f"  {time_str:>9}   {anchor}"
+        if is_past:
+            # Past events: dimmed wrapping span; the anchor inside still
+            # honours the host's link colour, so clicks remain obvious.
+            line = f'<span style="color:#666">{line}</span>'
+        lines.append(line)
+
+    if not rule_inserted:
+        lines.append(now_rule_html(now))
+
+    body = "\n".join(lines) if lines else "(no upcoming events)"
+    return f"<pre>{body}</pre>"
+
+
+def render_html_default() -> str:
+    tsv, err = fetch_tsv()
+    if err:
+        return f"<pre>agenda unavailable: {html.escape(err)}</pre>"
+    return render_html(tsv)
+
+
+def next_event_json() -> str:
+    """Emit the next upcoming (or currently-running) event as JSON.
+
+    Empty agenda → {"empty": true}. Used by the bar's nextMeeting widget so
+    it can show "Standup · in 15m" plus a click target for the conference URL.
+    """
+    tsv, err = fetch_tsv()
+    if err:
+        return json.dumps({"error": err})
+
+    now = datetime.now()
+    picks = []
+
+    for row in csv.DictReader(tsv.splitlines(), delimiter="\t"):
+        sd = row.get("start_date", "")
+        st = row.get("start_time", "")
+        title = row.get("title", "").strip()
+        # Skip all-day "Home" entries that gcalcli emits as a header.
+        if title == "Home" and not st:
+            continue
+        start_dt = parse_dt(sd, st)
+        if not start_dt:
+            continue
+        end_dt = parse_dt(row.get("end_date", sd), row.get("end_time", ""))
+        # Skip events whose end is already in the past. An event whose end is
+        # missing (all-day, single point in time) is treated as upcoming if
+        # its start is in the future.
+        if end_dt is not None and end_dt < now:
+            continue
+        picks.append((row, start_dt, end_dt))
+        # The one after is carried as "next" so the widget can render
+        # "NOW: this meeting - Next: the following one" without a second query.
+        if len(picks) == 2:
+            break
+
+    if not picks:
+        return json.dumps({"empty": True})
+
+    row, start_dt, end_dt = picks[0]
+    url = (
+        row.get("conference_uri")
+        or row.get("hangout_link")
+        or row.get("html_link")
+        or ""
+    )
+    delta = start_dt - now
+    minutes_until = int(delta.total_seconds() // 60)
+    ongoing = minutes_until <= 0 and end_dt is not None and end_dt > now
+
+    payload = {
+        "title": row.get("title", "").strip(),
+        "start_iso": start_dt.isoformat(timespec="minutes"),
+        "start_label": fmt_time(row.get("start_time", "")),
+        "minutes_until": minutes_until,
+        "ongoing": ongoing,
+        "url": url,
+        "is_conference": url_kind(row, url) == "conference",
+    }
+
+    if len(picks) == 2:
+        nrow, nstart, _nend = picks[1]
+        nurl = (
+            nrow.get("conference_uri")
+            or nrow.get("hangout_link")
+            or nrow.get("html_link")
+            or ""
+        )
+        payload["next"] = {
+            "title": nrow.get("title", "").strip(),
+            "start_iso": nstart.isoformat(timespec="minutes"),
+            "start_label": fmt_time(nrow.get("start_time", "")),
+            "minutes_until": int((nstart - now).total_seconds() // 60),
+            "url": nurl,
+            "is_conference": url_kind(nrow, nurl) == "conference",
+        }
+
+    return json.dumps(payload)
+
+
+def render_default(interval: int, span: str | None = None) -> str:
+    tsv, err = fetch_tsv(span)
+    body = f"agenda unavailable: {err}\n" if err else render(tsv) + "\n"
+    return header(interval) + body
+
+
+def render_passthrough(interval: int, args: list[str]) -> str:
+    proc = subprocess.run(
+        ["gcalcli", *args], capture_output=True, text=True, check=False
+    )
+    out = proc.stdout if proc.returncode == 0 else (
+        proc.stderr or "gcalcli failed\n"
+    )
+    return header(interval) + out
+
+
+def wait_or_quit(interval: int) -> bool:
+    """Sleep up to `interval` seconds; return True if user pressed q."""
+    r, _, _ = select.select([sys.stdin], [], [], interval)
+    if not r:
+        return False
+    ch = sys.stdin.read(1)
+    return ch.lower() == "q"
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    # Single-shot HTML mode for the Quickshell calendar popup. Skips the TUI
+    # refresh loop entirely so it works in a non-TTY context.
+    if "--html" in args:
+        sys.stdout.write(render_html_default() + "\n")
+        return
+
+    # Single-shot JSON mode used by the Quickshell nextMeeting bar widget.
+    if "--next-json" in args:
+        sys.stdout.write(next_event_json() + "\n")
+        return
+
+    # Scoping flags constrain the query window. Mutually exclusive; last wins.
+    span: str | None = None
+    for flag, name in (("--today", "today"), ("--week", "week"), ("--month", "month")):
+        if flag in args:
+            args = [a for a in args if a != flag]
+            span = name
+
+    once = "--once" in args
+    if once:
+        args = [a for a in args if a != "--once"]
+
+    interval = DEFAULT_INTERVAL
+    if args and args[0].isdigit():
+        interval = int(args.pop(0))
+    passthrough_args: list[str] = []
+    if args and args[0] == "--":
+        passthrough_args = args[1:]
+
+    # One-shot: render once and exit. Also the default whenever stdout is not a
+    # terminal, because wait_or_quit() selects on stdin -- at EOF that returns
+    # immediately, so the refresh loop would spin and re-run gcalcli forever.
+    if once or not sys.stdout.isatty():
+        global USE_ANSI
+        if not sys.stdout.isatty():
+            USE_ANSI = False
+            for name in ("RESET", "BOLD", "DIM", "CYAN", "YELLOW"):
+                globals()[name] = ""
+        if passthrough_args:
+            sys.stdout.write(render_passthrough(None, passthrough_args))
+        else:
+            sys.stdout.write(render_default(None, span))
+        return
+
+    sys.stdout.write(HIDE_CURSOR)
+    sys.stdout.flush()
+
+    fd = sys.stdin.fileno() if sys.stdin.isatty() else None
+    old = termios.tcgetattr(fd) if fd is not None else None
+    try:
+        if fd is not None:
+            tty.setcbreak(fd)
+        while True:
+            sys.stdout.write(CLEAR)
+            if passthrough_args:
+                sys.stdout.write(render_passthrough(interval, passthrough_args))
+            else:
+                sys.stdout.write(render_default(interval, span))
+            sys.stdout.flush()
+            if wait_or_quit(interval):
+                break
+    finally:
+        if old is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write(SHOW_CURSOR)
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stdout.write(SHOW_CURSOR)
+        sys.stdout.write("\n")

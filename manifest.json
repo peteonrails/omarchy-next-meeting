@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "peteonrails.next-meeting",
   "name": "Next Meeting",
-  "version": "1.3.5",
+  "version": "1.4.0",
   "author": "Pete Jackson",
   "license": "MIT",
   "description": "Always-visible \"Next: in 12m · Standup\" bar label fed by any command that prints the documented JSON. Speaks a warning before a meeting starts (and notifies instead when you're already in a call); pulses when a meeting is imminent, turns green once you've joined.",
